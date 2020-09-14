@@ -1,18 +1,47 @@
 package main
 
 import (
-	"bytes"
 	"io"
 	"log"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/creack/pty"
 	"golang.org/x/crypto/ssh/terminal"
 )
+
+type broadcaster struct {
+	sync.Mutex
+	outs []io.Writer
+}
+
+func newBroadcaster() *broadcaster {
+	return &broadcaster{
+		outs: []io.Writer{},
+	}
+}
+
+func (b *broadcaster) subscribe(out io.Writer) {
+	b.Lock()
+	defer b.Unlock()
+	b.outs = append(b.outs, out)
+}
+
+func (b *broadcaster) Write(p []byte) (n int, err error) {
+	b.Lock()
+	defer b.Unlock()
+	for _, w := range b.outs {
+		_, err := w.Write(p)
+		if err != nil {
+			continue
+		}
+	}
+	return len(p), nil
+}
 
 func main() {
 	command := exec.Command("zsh")
@@ -41,8 +70,8 @@ func main() {
 	}
 	defer terminal.Restore(int(os.Stdin.Fd()), oldState)
 
-	buf := &bytes.Buffer{}
-	writer := io.MultiWriter(os.Stdout, buf)
+	ptyBroadcaster := newBroadcaster()
+	ptyBroadcaster.subscribe(os.Stdout)
 
 	l, err := net.Listen("tcp", ":8080")
 	if err != nil {
@@ -56,12 +85,18 @@ func main() {
 				log.Printf("Cannot accpet connection. ERR: %v", err)
 				continue
 			}
-			go handleConn(conn, buf)
+			go func(c net.Conn) {
+				connReader, connWriter := io.Pipe()
+				defer connReader.Close()
+				defer connWriter.Close()
+				ptyBroadcaster.subscribe(connWriter)
+				handleConn(c, connReader)
+			}(conn)
 		}
 	}()
 
 	go io.Copy(ptmx, os.Stdin)
-	io.Copy(writer, ptmx)
+	io.Copy(ptyBroadcaster, ptmx)
 }
 
 func handleConn(c net.Conn, input io.Reader) {
