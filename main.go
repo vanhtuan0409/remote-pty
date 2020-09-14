@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/creack/pty"
+	"golang.org/x/crypto/ssh/terminal"
 )
 
 func main() {
@@ -32,6 +33,13 @@ func main() {
 		}
 	}()
 	resizeCh <- syscall.SIGWINCH //initial resize
+
+	// handle keyboard events
+	oldState, err := terminal.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		panic(err)
+	}
+	defer terminal.Restore(int(os.Stdin.Fd()), oldState)
 
 	buf := &bytes.Buffer{}
 	writer := io.MultiWriter(os.Stdout, buf)
