@@ -16,28 +16,32 @@ import (
 
 type broadcaster struct {
 	sync.Mutex
-	outs []io.Writer
+	outs map[string]io.Writer
 }
 
 func newBroadcaster() *broadcaster {
 	return &broadcaster{
-		outs: []io.Writer{},
+		outs: make(map[string]io.Writer),
 	}
 }
 
-func (b *broadcaster) subscribe(out io.Writer) {
+func (b *broadcaster) subscribe(ident string, out io.Writer) {
 	b.Lock()
 	defer b.Unlock()
-	b.outs = append(b.outs, out)
+	b.outs[ident] = out
+}
+
+func (b *broadcaster) unsubscribe(ident string) {
+	delete(b.outs, ident)
 }
 
 func (b *broadcaster) Write(p []byte) (n int, err error) {
 	b.Lock()
 	defer b.Unlock()
-	for _, w := range b.outs {
+	for ident, w := range b.outs {
 		_, err := w.Write(p)
 		if err != nil {
-			continue
+			b.unsubscribe(ident)
 		}
 	}
 	return len(p), nil
@@ -71,7 +75,7 @@ func main() {
 	defer terminal.Restore(int(os.Stdin.Fd()), oldState)
 
 	ptyBroadcaster := newBroadcaster()
-	ptyBroadcaster.subscribe(os.Stdout)
+	ptyBroadcaster.subscribe("stdout", os.Stdout)
 
 	l, err := net.Listen("tcp", ":8080")
 	if err != nil {
@@ -89,7 +93,7 @@ func main() {
 				connReader, connWriter := io.Pipe()
 				defer connReader.Close()
 				defer connWriter.Close()
-				ptyBroadcaster.subscribe(connWriter)
+				ptyBroadcaster.subscribe(c.RemoteAddr().String(), connWriter)
 				handleConn(c, connReader)
 			}(conn)
 		}
